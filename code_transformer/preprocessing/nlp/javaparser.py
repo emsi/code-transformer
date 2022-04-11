@@ -15,7 +15,7 @@ logger = get_logger(__file__)
 
 def java_to_ast(*code_snippets):
     asts = []
-    idx_successful = []
+    idx_successful = [True] * len(code_snippets)
     for i, code_snippet in enumerate(code_snippets):
         java_parser_call = subprocess.Popen(JAVA_PARSER_CMD, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                             stderr=subprocess.PIPE,
@@ -25,8 +25,9 @@ def java_to_ast(*code_snippets):
         if not errors == "":
             logger.warn(errors)
             logger.warn(code_snippet)
+            idx_successful[i] = False
         else:
             output = json.loads(output)
             asts.append(output)
-            idx_successful.append(i)
+            # idx_successful.append(i)
     return asts, idx_successful
