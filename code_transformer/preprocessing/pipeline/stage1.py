@@ -10,6 +10,8 @@ Implements the stage1 preprocessing pipeline which consists of several steps:
 from itertools import compress
 from typing import List
 
+import pandas as pd
+
 from code_transformer.modeling.constants import NUM_SUB_TOKENS, MAX_NUM_TOKENS, MASK_STRING, MASK_NUMBER, \
     INDENT_TOKEN, DEDENT_TOKEN
 from code_transformer.preprocessing.graph.ast import ASTGraph
@@ -46,7 +48,7 @@ class CTStage1Preprocessor:
                                                    numbers_masker, sub_tokenizer])
         self.tokens_limiter = TokensLimiter(max_num_tokens if use_tokens_limiter else None)
 
-    def process(self, batch, process_identifier):
+    def process(self, batch, process_identifier, return_successful=False):
         func_names, docstrings, code_snippets = zip(*batch)
 
         # Step 1: generate tokens from code snippets and apply filtering on token level
@@ -72,25 +74,43 @@ class CTStage1Preprocessor:
 
         assert all([len(l) == len(code_snippets) for l in [func_names, docstrings, stripped_code_snippets,
                                                            tokens_batch]]), "Intermediate lists differ in length"
-        # Select samples that passed the tokens limiter filter
-        func_names, docstrings, stripped_code_snippets, tokens_batch = zip(*compress(zip(func_names, docstrings,
-                                                                                         stripped_code_snippets,
-                                                                                         tokens_batch),
-                                                                                     samples_filter))
 
         # Step 3: Create ASTs from code snippets
         if self.language == 'java':
             ast_batch, idx_successful = java_to_ast(*stripped_code_snippets)
+            data_df = pd.DataFrame({
+                'ast_batch': ast_batch,
+                'stripped_code_snippets': stripped_code_snippets,
+                'tokens_batch': tokens_batch,
+                'func_names': func_names,
+                'docstrings': docstrings,
+                'idx_successful': idx_successful,
+                'samples_filter': samples_filter,
+            })
+            idx_successful = data_df["idx_successful"] & data_df["samples_filter"]
+            data_df = data_df[idx_successful]
+            ast_batch = data_df["ast_batch"].to_list()
+            stripped_code_snippets = data_df["stripped_code_snippets"].to_list()
+            tokens_batch = data_df["tokens_batch"].to_list()
+            func_names = data_df["func_names"].to_list()
+            docstrings = data_df["docstrings"].to_list()
+
         else:
+            # Select samples that passed the tokens limiter filter
+            func_names, docstrings, stripped_code_snippets, tokens_batch = zip(*compress(zip(func_names, docstrings,
+                                                                                             stripped_code_snippets,
+                                                                                             tokens_batch),
+                                                                                         samples_filter))
+
             ast_batch, idx_successful = semantic_parse(self.language, "--fail-on-parse-error", "--json-graph",
                                                        process_identifier, *stripped_code_snippets, quiet=False)
 
-        # In case, some of the snippets in the batch could not be parsed, we just ignore them
-        if idx_successful is not None:
-            stripped_code_snippets = [stripped_code_snippets[i] for i in idx_successful]
-            tokens_batch = [tokens_batch[i] for i in idx_successful]
-            func_names = [func_names[i] for i in idx_successful]
-            docstrings = [docstrings[i] for i in idx_successful]
+            # In case, some of the snippets in the batch could not be parsed, we just ignore them
+            if idx_successful is not None:
+                stripped_code_snippets = [stripped_code_snippets[i] for i in idx_successful]
+                tokens_batch = [tokens_batch[i] for i in idx_successful]
+                func_names = [func_names[i] for i in idx_successful]
+                docstrings = [docstrings[i] for i in idx_successful]
 
         # Step 4: Transform AST into graph and prune
         ast_graph_batch = []
@@ -125,6 +145,8 @@ class CTStage1Preprocessor:
             s = CTStage1Sample(*sample)
             samples_batch.append(s)
 
+        if return_successful:
+            return samples_batch, idx_successful
         return samples_batch
 
 
